@@ -1,0 +1,83 @@
+{
+  "tdd": {
+    "test_framework": "auto-detect",
+    "coverage_threshold": 80,
+    "max_refactoring_cycles": 3,
+    "branch_naming": "feature/issue-{number}-{slug}",
+    "test_timeout": 300,
+    "implementation_timeout": 600,
+    "refactoring_timeout": 400
+  },
+  "automation": {
+    "auto_create_pr": true,
+    "require_human_approval": false,
+    "max_agent_runtime": 1800,
+    "preserve_conversation": true,
+    "auto_tag_next_agent": true,
+    "verbose_logging": true,
+    "parallel_workflows": false
+  },
+  "agents": {
+    "model_preferences": {
+      "issue_initializer": "claude-3-sonnet",
+      "scenarii": "claude-3-opus-latest",
+      "test_implementor": "claude-3-opus-latest",
+      "implementor": "claude-3-opus-latest",
+      "refactoror": "claude-3-opus-latest"
+    },
+    "temperature": 0.7,
+    "max_tokens": 8192
+  },
+  "quality": {
+    "linting": true,
+    "type_checking": true,
+    "security_scan": false,
+    "complexity_threshold": 10,
+    "duplication_threshold": 5,
+    "min_test_coverage": 70
+  },
+  "notifications": {
+    "on_failure": true,
+    "on_success": true,
+    "on_pr_creation": true,
+    "mention_users": ["@team-lead", "@qa-team"]
+  },
+  "permissions": {
+    "allowed_commands": [
+      "git",
+      "gh",
+      "npm",
+      "yarn",
+      "python",
+      "pip",
+      "pytest",
+      "jest",
+      "mvn",
+      "gradle",
+      "make",
+      "go"
+    ],
+    "blocked_paths": [
+      "/.git",
+      "/node_modules",
+      "/.env",
+      "/secrets",
+      "/credentials"
+    ],
+    "max_file_size_mb": 10,
+    "allowed_file_extensions": [
+      ".js", ".ts", ".jsx", ".tsx",
+      ".py", ".java", ".go", ".rs",
+      ".html", ".css", ".scss",
+      ".json", ".yaml", ".yml",
+      ".md", ".txt", ".xml"
+    ]
+  },
+  "repository": {
+    "main_branch": "main",
+    "protected_branches": ["main", "master", "production"],
+    "require_issue_reference": true,
+    "auto_link_issues": true,
+    "delete_branch_on_merge": true
+  }
+}
