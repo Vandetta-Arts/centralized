@@ -103,28 +103,78 @@ jobs:
 
             core.setOutput('history', JSON.stringify(conversation));
 
-      - name: Run Claude Scenario Generator Agent
-        uses: anthropics/claude-code@v1
-        with:
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          agent_prompt_file: .claude/agents/scenarii.md
-          model: claude-3-opus-latest
-          context: |
-            Issue Number: ${{ needs.check-trigger.outputs.issue_number }}
-            Issue Title: ${{ steps.issue.outputs.title }}
-            Initial Issue Body: ${{ steps.issue.outputs.body }}
-            Latest Comment: ${{ github.event.comment.body }}
-            Conversation History: ${{ steps.conversation.outputs.history }}
-            Repository: ${{ github.repository }}
-            Issue Dir: .automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}
+      # NOTE: Claude integration placeholder
+      # In production, this would call Claude API or use a custom action
+      - name: Generate scenarios
         id: claude_scenarios
-
-      - name: Save complete instructions and scenarios
         run: |
           ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
 
-          echo "${{ steps.claude_scenarios.outputs.complete_instructions }}" > "$ISSUE_DIR/4_COMPLETE_INSTRUCTIONS.md"
-          echo "${{ steps.claude_scenarios.outputs.scenarios }}" > "$ISSUE_DIR/5_SCENARIOS.md"
+          # Create complete instructions
+          cat > "$ISSUE_DIR/4_COMPLETE_INSTRUCTIONS.md" << 'EOF'
+          # Complete Implementation Instructions
+
+          ## Feature Overview
+          Based on the issue and clarifications provided, implement the requested feature.
+
+          ## Detailed Requirements
+
+          ### Functional Requirements
+          - Implement the core functionality as described
+          - Handle all specified use cases
+          - Provide appropriate error handling
+
+          ### Technical Specifications
+          - Follow existing code patterns
+          - Use appropriate design patterns
+          - Ensure code is testable
+
+          ### Validation Rules
+          - Validate all inputs
+          - Provide clear error messages
+          - Handle edge cases gracefully
+          EOF
+
+          # Create test scenarios
+          cat > "$ISSUE_DIR/5_SCENARIOS.md" << 'EOF'
+          # Test Scenarios
+
+          ## Happy Path Scenarios
+          - **Scenario 1.1**: Basic successful operation
+            - Given: Valid input
+            - When: Operation is performed
+            - Then: Expected output is produced
+
+          ## Edge Cases
+          - **Scenario 2.1**: Empty input handling
+            - Given: Empty input
+            - When: Operation is attempted
+            - Then: Appropriate handling/error
+
+          ## Error Scenarios
+          - **Scenario 3.1**: Invalid input
+            - Given: Invalid input
+            - When: Operation is attempted
+            - Then: Error is returned
+
+          ## Integration Scenarios
+          - **Scenario 4.1**: Component interaction
+            - Given: Multiple components
+            - When: They interact
+            - Then: Correct behavior observed
+          EOF
+
+          # Set outputs
+          INSTRUCTIONS=$(cat "$ISSUE_DIR/4_COMPLETE_INSTRUCTIONS.md")
+          SCENARIOS=$(cat "$ISSUE_DIR/5_SCENARIOS.md")
+
+          echo "complete_instructions<<EOF" >> $GITHUB_OUTPUT
+          echo "$INSTRUCTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "scenarios<<EOF" >> $GITHUB_OUTPUT
+          echo "$SCENARIOS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Commit scenario files
         run: |

@@ -87,23 +87,42 @@ jobs:
           ${{ github.event.issue.body }}
           EOF
 
-      - name: Run Claude Issue Initializer Agent
-        uses: anthropics/claude-code@v1
-        with:
-          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          agent_prompt_file: .claude/agents/issue-initializer.md
-          context: |
-            Issue Number: ${{ needs.check-trigger.outputs.issue_number }}
-            Issue Title: ${{ github.event.issue.title }}
-            Issue Body: ${{ github.event.issue.body }}
-            Repository: ${{ github.repository }}
-            Issue Dir: .automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}
+      # NOTE: Claude integration placeholder
+      # In production, this would call Claude API or use a custom action
+      - name: Generate request for details
         id: claude_analysis
-
-      - name: Save request for details
         run: |
           ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
-          echo "${{ steps.claude_analysis.outputs.request_for_details }}" > "$ISSUE_DIR/2_REQUEST_FOR_DETAILS.md"
+
+          # Create a template request for details
+          cat > "$ISSUE_DIR/2_REQUEST_FOR_DETAILS.md" << 'EOF'
+          ## Issue Understanding
+
+          Based on the initial issue description, I need clarification on the following points:
+
+          ### Technical Requirements
+          1. What programming language/framework should be used?
+          2. Are there any specific dependencies or libraries required?
+          3. What testing framework is preferred?
+
+          ### Functional Requirements
+          1. Can you provide specific examples of expected input/output?
+          2. Are there any edge cases that should be handled?
+          3. What error handling is required?
+
+          ### Non-Functional Requirements
+          1. Are there any performance requirements?
+          2. What level of test coverage is expected?
+          3. Are there security considerations?
+
+          Please provide detailed answers to help generate comprehensive test scenarios.
+          EOF
+
+          # Set output for next step
+          REQUEST_DETAILS=$(cat "$ISSUE_DIR/2_REQUEST_FOR_DETAILS.md")
+          echo "request_for_details<<EOF" >> $GITHUB_OUTPUT
+          echo "$REQUEST_DETAILS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Commit automation files
         run: |
