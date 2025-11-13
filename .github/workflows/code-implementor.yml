@@ -1,0 +1,209 @@
+name: Code Implementor
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      issue_number: ${{ steps.check.outputs.issue_number }}
+    steps:
+      - name: Check for trigger
+        id: check
+        run: |
+          BODY="${{ github.event.comment.body }}"
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+
+          if [[ "$BODY" == *"@claude_implementor"* ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+  implement-code:
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get issue details
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }}
+            });
+
+            const sanitizedTitle = issue.data.title
+              .toLowerCase()
+              .replace(/[^a-z0-9-]/g, '-')
+              .replace(/--+/g, '-')
+              .replace(/^-|-$/g, '');
+
+            core.setOutput('title', issue.data.title);
+            core.setOutput('sanitized_title', sanitizedTitle);
+
+      - name: Switch to feature branch
+        run: |
+          BRANCH_NAME="feature/issue-${{ needs.check-trigger.outputs.issue_number }}-${{ steps.issue.outputs.sanitized_title }}"
+          git config user.name "Claude Code Implementor"
+          git config user.email "claude-bot@example.com"
+
+          git fetch origin "$BRANCH_NAME"
+          git checkout "$BRANCH_NAME"
+          git pull origin "$BRANCH_NAME"
+
+      - name: Setup Node.js (if needed)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+        if: hashFiles('package.json') != ''
+
+      - name: Install dependencies (if needed)
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci || npm install
+          fi
+
+      - name: Run initial tests to confirm they fail
+        id: initial_test
+        continue-on-error: true
+        run: |
+          echo "Running tests to confirm they are failing before implementation..."
+
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm test 2>&1 | tee initial_test_output.txt
+            INITIAL_EXIT_CODE=${PIPESTATUS[0]}
+          elif [ -f "Makefile" ] && grep -q '^test:' Makefile; then
+            make test 2>&1 | tee initial_test_output.txt
+            INITIAL_EXIT_CODE=${PIPESTATUS[0]}
+          elif [ -f "pytest.ini" ] || [ -f "setup.py" ]; then
+            python -m pytest 2>&1 | tee initial_test_output.txt
+            INITIAL_EXIT_CODE=${PIPESTATUS[0]}
+          else
+            echo "No test runner detected" > initial_test_output.txt
+            INITIAL_EXIT_CODE=1
+          fi
+
+          if [ $INITIAL_EXIT_CODE -eq 0 ]; then
+            echo "ERROR: Tests are already passing. Cannot proceed with implementation."
+            exit 1
+          else
+            echo "Good: Tests are failing. Proceeding with implementation."
+          fi
+
+      - name: Read test plan and scenarios
+        id: context
+        run: |
+          ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
+
+          if [ -f "$ISSUE_DIR/6_SCENARIOS_TESTS_IMPLEMENTATION_PLAN.md" ]; then
+            TEST_PLAN=$(cat "$ISSUE_DIR/6_SCENARIOS_TESTS_IMPLEMENTATION_PLAN.md")
+            echo "test_plan<<EOF" >> $GITHUB_OUTPUT
+            echo "$TEST_PLAN" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -f "$ISSUE_DIR/5_SCENARIOS.md" ]; then
+            SCENARIOS=$(cat "$ISSUE_DIR/5_SCENARIOS.md")
+            echo "scenarios<<EOF" >> $GITHUB_OUTPUT
+            echo "$SCENARIOS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Claude Code Implementor Agent
+        uses: anthropics/claude-code@v1
+        with:
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          agent_prompt_file: .claude/agents/implementor.md
+          model: claude-3-opus-latest
+          context: |
+            Issue Number: ${{ needs.check-trigger.outputs.issue_number }}
+            Issue Title: ${{ steps.issue.outputs.title }}
+            Test Plan: ${{ steps.context.outputs.test_plan }}
+            Scenarios: ${{ steps.context.outputs.scenarios }}
+            Repository: ${{ github.repository }}
+            Issue Dir: .automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}
+            TDD Phase: GREEN - Write minimal code to make tests pass
+            Constraint: Cannot modify test files, only production code
+        id: claude_implementation
+
+      - name: Save implementation plan
+        run: |
+          ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
+          echo "${{ steps.claude_implementation.outputs.implementation_plan }}" > "$ISSUE_DIR/7_IMPLEMENTATION_PLAN.md"
+
+      - name: Apply code implementation
+        run: |
+          echo "${{ steps.claude_implementation.outputs.code_files }}" | base64 -d | tar -xzf -
+
+      - name: Run tests to verify they pass
+        id: final_test
+        run: |
+          echo "Running tests to verify implementation..."
+
+          if [ -f "package.json" ] && grep -q '"test"' package.json; then
+            npm test 2>&1 | tee final_test_output.txt
+            FINAL_EXIT_CODE=${PIPESTATUS[0]}
+          elif [ -f "Makefile" ] && grep -q '^test:' Makefile; then
+            make test 2>&1 | tee final_test_output.txt
+            FINAL_EXIT_CODE=${PIPESTATUS[0]}
+          elif [ -f "pytest.ini" ] || [ -f "setup.py" ]; then
+            python -m pytest 2>&1 | tee final_test_output.txt
+            FINAL_EXIT_CODE=${PIPESTATUS[0]}
+          else
+            echo "No test runner detected" > final_test_output.txt
+            FINAL_EXIT_CODE=1
+          fi
+
+          if [ $FINAL_EXIT_CODE -eq 0 ]; then
+            echo "SUCCESS: All tests are passing!"
+            echo "test_status=passing" >> $GITHUB_OUTPUT
+          else
+            echo "FAILURE: Tests are still failing after implementation"
+            echo "test_status=failing" >> $GITHUB_OUTPUT
+            # Don't exit with error, we'll handle this in the comment
+          fi
+
+      - name: Commit implementation
+        if: steps.final_test.outputs.test_status == 'passing'
+        run: |
+          git add -A
+          git commit -m "Implement code for issue #${{ needs.check-trigger.outputs.issue_number }} (TDD Green phase)" || echo "No changes to commit"
+          git push || echo "Nothing to push"
+
+      - name: Post implementation results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testStatus = '${{ steps.final_test.outputs.test_status }}';
+            let body;
+
+            if (testStatus === 'passing') {
+              body = `## Implementation Complete ✅\n\nProduction code has been implemented and all tests are passing (TDD Green phase).\n\n### Implementation Plan\n${{ steps.claude_implementation.outputs.implementation_plan }}\n\n### Test Results\n✅ All tests passing\n\nThe implementation successfully satisfies all test requirements with minimal code.\n\n---\n*Tagging @claude_refactoror to improve code quality while maintaining test success.*`;
+            } else {
+              body = `## Implementation Failed ❌\n\nTests are still failing after implementation attempt.\n\n### Implementation Plan\n${{ steps.claude_implementation.outputs.implementation_plan }}\n\n### Test Results\n❌ Tests failing\n\nThe implementation did not successfully make all tests pass. Manual intervention may be required.\n\n*Please review the test output and implementation, then retry by tagging @claude_implementor again.*`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }},
+              body: body
+            });

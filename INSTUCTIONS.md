@@ -27,3 +27,5 @@ d. This triggers the @claude_scenarii which
 e. @claude_test_implementor `6_SCENARIOS_TESTS_IMPLEMENTATION_PLAN.md`. In ultrathink plan mode best model. Then implements it. All new tests should fail. When this is done, tag @claude_implementor
 f. @claude_implementor plans in ultrathink mode best model and creates `7_IMPLEMENTATION_PLAN.md`, then implementes it and pushes the changes. All tests should pass. Then, tags @claude_refactoror. Code edits don't have to be very clean. Focus should be on making tests pass. Forbidden to touch the tests
 g. @claude_refactoror plans in ultrathink mode best model and creates `8_REFACTORING_PLAN.md`, then implements it. After implementing this reformating, it either decides code is clean enough, or decides to go for a new loop of refactoring, by re-tagging @claude_refactoror in the issues
+
+I would like you to help me set this up by coding the necessary agents and github action workflows.

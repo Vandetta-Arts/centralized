@@ -1,0 +1,312 @@
+name: Pull Request Creator
+
+on:
+  issue_comment:
+    types: [created, edited]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to create PR for'
+        required: true
+        type: number
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      issue_number: ${{ steps.check.outputs.issue_number }}
+    steps:
+      - name: Check for trigger
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "issue_number=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
+          else
+            BODY="${{ github.event.comment.body }}"
+            ISSUE_NUMBER="${{ github.event.issue.number }}"
+
+            if [[ "$BODY" == *"@claude_pr_creator"* ]]; then
+              echo "should_run=true" >> $GITHUB_OUTPUT
+              echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+            else
+              echo "should_run=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  create-pr:
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Get issue details
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }}
+            });
+
+            const sanitizedTitle = issue.data.title
+              .toLowerCase()
+              .replace(/[^a-z0-9-]/g, '-')
+              .replace(/--+/g, '-')
+              .replace(/^-|-$/g, '');
+
+            core.setOutput('title', issue.data.title);
+            core.setOutput('sanitized_title', sanitizedTitle);
+            core.setOutput('body', issue.data.body);
+
+      - name: Switch to feature branch
+        id: branch
+        run: |
+          BRANCH_NAME="feature/issue-${{ needs.check-trigger.outputs.issue_number }}-${{ steps.issue.outputs.sanitized_title }}"
+          git config user.name "Claude PR Creator"
+          git config user.email "claude-bot@example.com"
+
+          # Check if branch exists
+          if git ls-remote --heads origin "$BRANCH_NAME" | grep -q "$BRANCH_NAME"; then
+            git fetch origin "$BRANCH_NAME"
+            git checkout "$BRANCH_NAME"
+            echo "branch_exists=true" >> $GITHUB_OUTPUT
+            echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: Feature branch does not exist"
+            echo "branch_exists=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Check if PR already exists
+        id: pr_check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pulls = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${{ steps.branch.outputs.branch_name }}`,
+              state: 'open'
+            });
+
+            if (pulls.data.length > 0) {
+              core.setOutput('pr_exists', 'true');
+              core.setOutput('pr_number', pulls.data[0].number);
+              core.setOutput('pr_url', pulls.data[0].html_url);
+            } else {
+              core.setOutput('pr_exists', 'false');
+            }
+
+      - name: Gather automation documents
+        if: steps.pr_check.outputs.pr_exists != 'true'
+        id: docs
+        run: |
+          ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
+
+          # Read all automation documents
+          COMPLETE_INSTRUCTIONS=""
+          SCENARIOS=""
+          TEST_PLAN=""
+          IMPLEMENTATION_PLAN=""
+          REFACTORING_PLANS=""
+
+          if [ -f "$ISSUE_DIR/4_COMPLETE_INSTRUCTIONS.md" ]; then
+            COMPLETE_INSTRUCTIONS=$(cat "$ISSUE_DIR/4_COMPLETE_INSTRUCTIONS.md")
+          fi
+
+          if [ -f "$ISSUE_DIR/5_SCENARIOS.md" ]; then
+            SCENARIOS=$(cat "$ISSUE_DIR/5_SCENARIOS.md")
+          fi
+
+          if [ -f "$ISSUE_DIR/6_SCENARIOS_TESTS_IMPLEMENTATION_PLAN.md" ]; then
+            TEST_PLAN=$(cat "$ISSUE_DIR/6_SCENARIOS_TESTS_IMPLEMENTATION_PLAN.md")
+          fi
+
+          if [ -f "$ISSUE_DIR/7_IMPLEMENTATION_PLAN.md" ]; then
+            IMPLEMENTATION_PLAN=$(cat "$ISSUE_DIR/7_IMPLEMENTATION_PLAN.md")
+          fi
+
+          # Collect all refactoring plans
+          if [ -f "$ISSUE_DIR/8_REFACTORING_PLAN.md" ]; then
+            REFACTORING_PLANS=$(cat "$ISSUE_DIR/8_REFACTORING_PLAN.md")
+          fi
+
+          for i in {2..10}; do
+            if [ -f "$ISSUE_DIR/8_REFACTORING_PLAN_v${i}.md" ]; then
+              REFACTORING_PLANS="${REFACTORING_PLANS}\n\n---\n\n$(cat "$ISSUE_DIR/8_REFACTORING_PLAN_v${i}.md")"
+            fi
+          done
+
+          # Export for use in PR description
+          echo "complete_instructions<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMPLETE_INSTRUCTIONS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "has_docs=true" >> $GITHUB_OUTPUT
+
+      - name: Get commit summary
+        if: steps.pr_check.outputs.pr_exists != 'true'
+        id: commits
+        run: |
+          # Get commits on feature branch that aren't on main
+          COMMIT_COUNT=$(git rev-list --count origin/main..HEAD)
+          COMMIT_LIST=$(git log --oneline origin/main..HEAD)
+
+          echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          echo "commit_list<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMIT_LIST" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get changed files summary
+        if: steps.pr_check.outputs.pr_exists != 'true'
+        id: changes
+        run: |
+          # Get file change statistics
+          CHANGED_FILES=$(git diff --name-status origin/main..HEAD)
+          FILES_CHANGED=$(git diff --stat origin/main..HEAD | tail -1)
+
+          echo "changed_files<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_FILES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "files_summary=$FILES_CHANGED" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.pr_check.outputs.pr_exists != 'true'
+        id: create_pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issueNumber = ${{ needs.check-trigger.outputs.issue_number }};
+            const branchName = '${{ steps.branch.outputs.branch_name }}';
+
+            // Build PR description
+            let description = `## Summary\n\n`;
+            description += `This PR implements the solution for issue #${issueNumber} using Test-Driven Development (TDD) methodology.\n\n`;
+
+            description += `### Issue Description\n${{ steps.issue.outputs.body }}\n\n`;
+
+            description += `### Implementation Overview\n`;
+            description += `${{ steps.docs.outputs.complete_instructions }}\n\n`;
+
+            description += `### Development Process\n`;
+            description += `This PR was created following strict TDD principles:\n`;
+            description += `1. **Red Phase**: Tests written to fail initially\n`;
+            description += `2. **Green Phase**: Minimal code written to pass tests\n`;
+            description += `3. **Refactor Phase**: Code improved while maintaining test success\n\n`;
+
+            description += `### Changes Summary\n`;
+            description += `- **Commits**: ${{ steps.commits.outputs.commit_count }}\n`;
+            description += `- **Files Changed**: ${{ steps.changes.outputs.files_summary }}\n\n`;
+
+            description += `<details>\n<summary>Commit History</summary>\n\n`;
+            description += '```\n${{ steps.commits.outputs.commit_list }}\n```\n';
+            description += `</details>\n\n`;
+
+            description += `### Testing\n`;
+            description += `All tests are passing. The implementation satisfies all test scenarios defined in the TDD process.\n\n`;
+
+            description += `### Documentation\n`;
+            description += `Complete documentation of the TDD process is available in:\n`;
+            description += `- \`.automation/open/issue-${issueNumber}/\`\n\n`;
+
+            description += `---\n`;
+            description += `*This PR was automatically generated using the Claude TDD Automation System.*\n`;
+            description += `*All code changes were implemented following Test-Driven Development principles.*\n\n`;
+            description += `Closes #${issueNumber}`;
+
+            // Create the PR
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[TDD] ${${{ steps.issue.outputs.title }}}`,
+              body: description,
+              head: branchName,
+              base: 'main',
+              draft: false
+            });
+
+            core.setOutput('pr_number', pr.data.number);
+            core.setOutput('pr_url', pr.data.html_url);
+
+            // Link PR to issue
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['has-pr', 'tdd-complete']
+            });
+
+            return pr.data;
+
+      - name: Move automation files to closed
+        run: |
+          ISSUE_NUMBER="${{ needs.check-trigger.outputs.issue_number }}"
+          SOURCE_DIR=".automation/open/issue-${ISSUE_NUMBER}"
+          DEST_DIR=".automation/closed/issue-${ISSUE_NUMBER}"
+
+          if [ -d "$SOURCE_DIR" ]; then
+            mkdir -p ".automation/closed"
+            mv "$SOURCE_DIR" "$DEST_DIR"
+
+            # Add completion timestamp
+            echo "PR Created: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> "$DEST_DIR/COMPLETION.md"
+            echo "PR Number: ${{ steps.create_pr.outputs.pr_number || steps.pr_check.outputs.pr_number }}" >> "$DEST_DIR/COMPLETION.md"
+
+            git add -A
+            git commit -m "Archive automation files for completed issue #${ISSUE_NUMBER}"
+            git push
+          fi
+
+      - name: Post PR creation notification
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prExists = '${{ steps.pr_check.outputs.pr_exists }}' === 'true';
+            const prNumber = '${{ steps.create_pr.outputs.pr_number || steps.pr_check.outputs.pr_number }}';
+            const prUrl = '${{ steps.create_pr.outputs.pr_url || steps.pr_check.outputs.pr_url }}';
+            let body;
+
+            if (prExists) {
+              body = `## Pull Request Already Exists ℹ️\n\n`;
+              body += `A pull request for this issue already exists:\n\n`;
+              body += `- PR #${prNumber}: ${prUrl}\n\n`;
+              body += `Please review the existing PR instead of creating a new one.`;
+            } else {
+              body = `## Pull Request Created Successfully 🎉\n\n`;
+              body += `The TDD implementation for this issue has been completed and a pull request has been created:\n\n`;
+              body += `- PR #${prNumber}: ${prUrl}\n\n`;
+              body += `### Next Steps\n`;
+              body += `1. Review the pull request\n`;
+              body += `2. Run any additional manual tests if needed\n`;
+              body += `3. Request code review from team members\n`;
+              body += `4. Merge when approved\n\n`;
+              body += `### TDD Process Summary\n`;
+              body += `✅ Test scenarios defined\n`;
+              body += `✅ Failing tests written (Red phase)\n`;
+              body += `✅ Production code implemented (Green phase)\n`;
+              body += `✅ Code refactored for quality (Refactor phase)\n`;
+              body += `✅ All tests passing\n`;
+              body += `✅ Pull request created\n\n`;
+              body += `The complete TDD automation cycle has been successfully completed!`;
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }},
+              body: body
+            });

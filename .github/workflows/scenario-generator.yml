@@ -1,0 +1,150 @@
+name: Scenario Generator
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+jobs:
+  check-trigger:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      issue_number: ${{ steps.check.outputs.issue_number }}
+    steps:
+      - name: Check for trigger
+        id: check
+        run: |
+          BODY="${{ github.event.comment.body }}"
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+
+          if [[ "$BODY" == *"@claude_scenarii"* ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "issue_number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+  generate-scenarios:
+    needs: check-trigger
+    if: needs.check-trigger.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get issue details
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }}
+            });
+
+            const sanitizedTitle = issue.data.title
+              .toLowerCase()
+              .replace(/[^a-z0-9-]/g, '-')
+              .replace(/--+/g, '-')
+              .replace(/^-|-$/g, '');
+
+            core.setOutput('title', issue.data.title);
+            core.setOutput('sanitized_title', sanitizedTitle);
+            core.setOutput('body', issue.data.body);
+
+      - name: Switch to feature branch
+        run: |
+          BRANCH_NAME="feature/issue-${{ needs.check-trigger.outputs.issue_number }}-${{ steps.issue.outputs.sanitized_title }}"
+          git config user.name "Claude Scenario Generator"
+          git config user.email "claude-bot@example.com"
+
+          git fetch origin "$BRANCH_NAME"
+          git checkout "$BRANCH_NAME"
+          git pull origin "$BRANCH_NAME"
+
+      - name: Save user details
+        run: |
+          ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
+
+          cat > "$ISSUE_DIR/3_USER_DETAILS.md" << 'EOF'
+          # User Details Response
+
+          **Response By:** ${{ github.event.comment.user.login }}
+          **Response At:** ${{ github.event.comment.created_at }}
+
+          ## User Response
+
+          ${{ github.event.comment.body }}
+          EOF
+
+      - name: Get conversation history
+        id: conversation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }}
+            });
+
+            const conversation = comments.data.map(c => ({
+              author: c.user.login,
+              created_at: c.created_at,
+              body: c.body
+            }));
+
+            core.setOutput('history', JSON.stringify(conversation));
+
+      - name: Run Claude Scenario Generator Agent
+        uses: anthropics/claude-code@v1
+        with:
+          api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          agent_prompt_file: .claude/agents/scenarii.md
+          model: claude-3-opus-latest
+          context: |
+            Issue Number: ${{ needs.check-trigger.outputs.issue_number }}
+            Issue Title: ${{ steps.issue.outputs.title }}
+            Initial Issue Body: ${{ steps.issue.outputs.body }}
+            Latest Comment: ${{ github.event.comment.body }}
+            Conversation History: ${{ steps.conversation.outputs.history }}
+            Repository: ${{ github.repository }}
+            Issue Dir: .automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}
+        id: claude_scenarios
+
+      - name: Save complete instructions and scenarios
+        run: |
+          ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
+
+          echo "${{ steps.claude_scenarios.outputs.complete_instructions }}" > "$ISSUE_DIR/4_COMPLETE_INSTRUCTIONS.md"
+          echo "${{ steps.claude_scenarios.outputs.scenarios }}" > "$ISSUE_DIR/5_SCENARIOS.md"
+
+      - name: Commit scenario files
+        run: |
+          ISSUE_DIR=".automation/open/issue-${{ needs.check-trigger.outputs.issue_number }}"
+          git add "$ISSUE_DIR"
+          git commit -m "Generate scenarios for issue #${{ needs.check-trigger.outputs.issue_number }}" || echo "No changes to commit"
+          git push || echo "Nothing to push"
+
+      - name: Post scenarios and tag test implementor
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const instructions = `${{ steps.claude_scenarios.outputs.complete_instructions }}`;
+            const scenarios = `${{ steps.claude_scenarios.outputs.scenarios }}`;
+
+            const body = `## Complete Instructions\n\n${instructions}\n\n## Test Scenarios\n\n${scenarios}\n\n---\n*Scenarios generated. Tagging @claude_test_implementor to create failing tests following TDD principles.*`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ${{ needs.check-trigger.outputs.issue_number }},
+              body: body
+            });
